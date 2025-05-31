@@ -44,11 +44,13 @@ Route::prefix('admin')->name('admin.')->group(function () {
 
         // --- Rute Manajemen Pemilih (Disesuaikan) ---
         // Menggunakan Route::resource untuk sebagian besar operasi CRUD
-        Route::resource('pemilih', AdminPemilihController::class)->except(['show']); // <-- Perubahan di sini
+        Route::resource('pemilih', AdminPemilihController::class)->except(['show']);
         Route::prefix('pemilih')->name('pemilih.')->group(function () {
             // Rute khusus untuk enrollment wajah (tetap terpisah dari resource)
             Route::get('/enroll', [AdminPemilihController::class, 'showEnrollForm'])->name('enroll.form');
             Route::post('/enroll', [AdminPemilihController::class, 'enrollFace'])->name('enroll.submit');
+            // Route liveness.check dipindahkan keluar dari middleware auth SEMENTARA untuk debugging
+            // Route::post('/liveness-check', [AdminPemilihController::class, 'checkLiveness'])->name('liveness.check'); 
         });
         // --- Akhir Rute Manajemen Pemilih ---
 
@@ -74,12 +76,20 @@ Route::prefix('admin')->name('admin.')->group(function () {
     });
 });
 
+// --- BARU: Route liveness check untuk admin yang diakses terpisah (DEBUGGING ONLY) ---
+// Ini untuk mengatasi error 500/SyntaxError yang mungkin disebabkan middleware auth
+// AKAN DIKEMBALIKAN KE DALAM GROUP AUTH SETELAH DEBUGGING
+Route::post('admin/pemilih/liveness-check', [AdminPemilihController::class, 'checkLiveness'])->name('admin.pemilih.liveness.check');
+
+
 // --- Rute untuk Pemilih ---
 Route::prefix('pemilih')->name('pemilih.')->group(function () {
     // Rute yang hanya bisa diakses oleh guest (belum login) pemilih
     Route::middleware('guest:web_pemilih')->group(function () {
         Route::get('/login', [PemilihAuthController::class, 'showLoginForm'])->name('login');
         Route::post('/login', [PemilihAuthController::class, 'login']);
+        // Route untuk liveness check terpisah di halaman login pemilih
+        Route::post('/liveness-check', [PemilihAuthController::class, 'checkLiveness'])->name('liveness.check');
     });
 
     // Grup rute yang hanya bisa diakses setelah pemilih login

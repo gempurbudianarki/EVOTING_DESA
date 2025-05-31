@@ -49,7 +49,7 @@ class PemilihController extends Controller
             'nik' => ['required', 'string', 'digits:16', 'exists:pemilih,nik'],
             'face_image_sequence' => ['required', 'array', 'min:5'], // Harus array gambar, minimal 5 frame
             'face_image_sequence.*' => ['required', 'string'],
-            'liveness_challenge_type' => ['required', 'string', 'in:blink,head_yaw,head_pitch'],
+            'liveness_challenge_type' => ['required', 'string', 'in:all_passed'], // Sekarang hanya menerima 'all_passed'
         ], [
             'nik.exists' => 'NIK tidak ditemukan di database pemilih. Mohon tambahkan pemilih ini terlebih dahulu.',
             'nik.digits' => 'NIK harus 16 digit angka.',
@@ -61,7 +61,7 @@ class PemilihController extends Controller
 
         $nik = $request->input('nik');
         $faceImageSequence = $request->input('face_image_sequence');
-        $livenessChallengeType = $request->input('liveness_challenge_type');
+        $livenessChallengeType = $request->input('liveness_challenge_type'); // Ini akan menjadi 'all_passed'
 
         // 2. Cari pemilih berdasarkan NIK
         /** @var \App\Models\Pemilih $pemilih */
@@ -76,7 +76,7 @@ class PemilihController extends Controller
             $response = Http::timeout(60)->post($enroll_face_url, [
                 'nik' => $nik,
                 'image_sequence' => $faceImageSequence,
-                'challenge_type' => $livenessChallengeType
+                'challenge_type' => $livenessChallengeType // Mengirimkan 'all_passed'
             ]);
 
             if ($response->successful()) {
@@ -98,7 +98,8 @@ class PemilihController extends Controller
                 }
             } else {
                 Log::error('Microservice enrollment error (HTTP ' . $response->status() . '): ' . $response->body());
-                return back()->withErrors(['general' => 'Terjadi kesalahan pada layanan pendaftaran wajah. Coba lagi nanti. (Kode: ' . $response->status() . ')']);
+                $errorMessage = $response->json()['message'] ?? 'Terjadi kesalahan pada layanan pendaftaran wajah.';
+                return back()->withErrors(['general' => $errorMessage . ' (Kode: ' . $response->status() . ')']);
             }
         } catch (\Illuminate\Http\Client\ConnectionException $e) {
             Log::error('Microservice pendaftaran wajah tidak dapat dijangkau: ' . $e->getMessage());
@@ -106,6 +107,49 @@ class PemilihController extends Controller
         } catch (\Throwable $e) {
             Log::error('Kesalahan tak terduga saat pendaftaran wajah untuk NIK ' . $nik . ': ' . $e->getMessage());
             return back()->withErrors(['general' => 'Terjadi kesalahan tak terduga saat pendaftaran wajah. Silakan coba lagi.']);
+        }
+    }
+
+    /**
+     * Endpoint untuk melakukan liveness check terpisah di admin panel.
+     * Dipanggil oleh frontend untuk setiap tantangan liveness.
+     *
+     * @param \Illuminate\Http\Request $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function checkLiveness(Request $request)
+    {
+        $request->validate([
+            'image_sequence' => ['required', 'array', 'min:5'],
+            'image_sequence.*' => ['required', 'string'],
+            'challenge_type' => ['required', 'string', 'in:blink,head_yaw,head_pitch'],
+        ], [
+            'image_sequence.required' => 'Urutan gambar wajah diperlukan.',
+            'challenge_type.required' => 'Tipe tantangan liveness diperlukan.'
+        ]);
+
+        $face_service_url = env('FACE_VERIFICATION_SERVICE_URL', 'http://localhost:5000/verify_face');
+        $liveness_only_url = str_replace('/verify_face', '/liveness_only', $face_service_url); 
+        
+        try {
+            $response = Http::timeout(15)->post($liveness_only_url, [ // Timeout lebih pendek karena hanya liveness
+                'image_sequence' => $request->input('image_sequence'),
+                'challenge_type' => $request->input('challenge_type')
+            ]);
+
+            if ($response->successful()) {
+                return response()->json($response->json());
+            } else {
+                Log::error('Microservice liveness check error (HTTP ' . $response->status() . '): ' . $response->body());
+                $errorMessage = $response->json()['message'] ?? 'Layanan liveness tidak merespons dengan baik.';
+                return response()->json(['status' => 'error', 'message' => $errorMessage], $response->status());
+            }
+        } catch (\Illuminate\Http\Client\ConnectionException $e) {
+            Log::error('Microservice liveness check tidak dapat dijangkau: ' . $e->getMessage());
+            return response()->json(['status' => 'error', 'message' => 'Layanan liveness tidak tersedia. Silakan hubungi panitia.'], 500);
+        } catch (\Throwable $e) {
+            Log::error('Kesalahan tak terduga saat liveness check: ' . $e->getMessage());
+            return response()->json(['status' => 'error', 'message' => 'Terjadi kesalahan tak terduga saat liveness check.'], 500);
         }
     }
 

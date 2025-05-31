@@ -44,6 +44,13 @@
             0% { transform: scale(1); opacity: 1; }
             100% { transform: scale(1.2); opacity: 0.7; }
         }
+        #overlayCanvas { /* Pastikan ini ada untuk menggambar landmarks */
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
     </style>
     <script defer src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
 </head>
@@ -115,8 +122,8 @@
     <script>
         // --- DOM Elements ---
         const webcam = document.getElementById('webcam');
-        const overlayCanvas = document.getElementById('overlayCanvas'); // Canvas untuk overlay
-        const captureCanvas = document.getElementById('captureCanvas');   // Canvas untuk capture frame
+        const overlayCanvas = document.getElementById('overlayCanvas');
+        const captureCanvas = document.getElementById('captureCanvas');
         const faceImageSequenceInput = document.getElementById('faceImageSequenceInput');
         const livenessChallengeTypeInput = document.getElementById('livenessChallengeTypeInput');
         const cameraStatus = document.getElementById('cameraStatus');
@@ -128,12 +135,14 @@
         // --- Global Variables ---
         let stream;
         let displaySize;
-        let faceMatcher; // Untuk perbandingan wajah (jika perlu di frontend)
-        let challenges = ['blink', 'head_yaw', 'head_pitch']; // Tipe challenge yang akan diacak
-        let currentChallenge = '';
-        let imageSequence = [];
-        const SEQUENCE_LENGTH = 15; // Jumlah frame yang akan dikirim untuk liveness check
+        // let faceMatcher; // Tidak perlu jika embedding hanya di backend
+        const CHALLENGES = ['blink', 'head_yaw', 'head_pitch']; // Tipe challenge yang akan diulang berurutan
+        let currentChallengeIndex = 0; // Mengikuti tantangan yang sedang berjalan
+        let currentChallenge = ''; // Tantangan yang aktif saat ini
+        let imageSequence = []; // Kumpulan frame untuk satu tantangan
         const CHALLENGE_DURATION = 3000; // Durasi setiap challenge dalam ms (3 detik)
+        const SEQUENCE_INTERVAL = 100; // Interval pengambilan frame dalam ms
+        let captureIntervalId; // ID untuk clearInterval
 
         // --- Face-API.js Models ---
         Promise.all([
@@ -150,16 +159,23 @@
         // --- Camera & Frame Capture ---
         async function startCamera() {
             try {
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    cameraStatus.textContent = 'Browser tidak mendukung akses kamera.';
+                    loginButton.disabled = true;
+                    return;
+                }
                 stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
                 webcam.srcObject = stream;
                 cameraStatus.textContent = 'Kamera aktif. Harap bersiap untuk verifikasi wajah.';
                 webcam.addEventListener('play', () => {
-                    displaySize = { width: webcam.videoWidth, height: webcam.videoHeight };
+                    displaySize = {
+                        width: webcam.videoWidth || webcam.offsetWidth, // Fallback jika videoWidth belum tersedia
+                        height: webcam.videoHeight || webcam.offsetHeight
+                    };
                     faceapi.matchDimensions(overlayCanvas, displaySize);
                     faceapi.matchDimensions(captureCanvas, displaySize);
-                    loginButton.disabled = false; // Aktifkan tombol login setelah kamera aktif
-                    // Mulai deteksi wajah setelah video play
-                    detectAndAnalyzeFace(); 
+                    loginButton.disabled = true; // Nonaktifkan tombol saat memulai, akan aktif setelah semua liveness
+                    startLivenessChallengeCycle(); // Mulai siklus tantangan liveness
                 });
             } catch (err) {
                 console.error("Error accessing camera:", err);
@@ -177,151 +193,142 @@
         }
 
         // --- Liveness Detection Logic (Frontend) ---
-        let currentChallengeIndex = 0;
-        let blinkCount = 0;
-        let consecutiveNoBlinkFrames = 0;
-        let lastYaw = 0;
-        let lastPitch = 0;
-        let headMovementDetected = false;
-        let challengeInProgress = false;
 
-        async function detectAndAnalyzeFace() {
+        function startLivenessChallengeCycle() {
+            if (currentChallengeIndex < CHALLENGES.length) {
+                currentChallenge = CHALLENGES[currentChallengeIndex]; // Dapatkan tantangan berikutnya
+                instructionText.textContent = getChallengeInstruction(currentChallenge);
+                livenessInstruction.classList.remove('hidden');
+                livenessStatus.textContent = 'Bersiap...';
+                imageSequence = []; // Reset sequence untuk tantangan baru
+                challengeInProgress = true;
+                loginButton.disabled = true; // Pastikan tombol dinonaktifkan selama challenge
+
+                captureIntervalId = setInterval(() => {
+                    if (imageSequence.length < (CHALLENGE_DURATION / SEQUENCE_INTERVAL) * 1.5) { // Pastikan cukup frame
+                        imageSequence.push(takePicture(webcam, captureCanvas));
+                    }
+                }, SEQUENCE_INTERVAL);
+
+                setTimeout(() => {
+                    if (challengeInProgress) livenessStatus.textContent = 'Lakukan sekarang!';
+                    detectAndDrawLandmarks(); // Mulai deteksi dan gambar landmarks
+                }, 500); // Beri sedikit waktu untuk bersiap
+
+                setTimeout(async () => {
+                    clearInterval(captureIntervalId); // Hentikan capture
+                    if (challengeInProgress) await processLivenessChallenge(currentChallenge); // Proses tantangan
+                }, CHALLENGE_DURATION + 500); // Durasi tantangan + sedikit jeda
+            } else {
+                // Semua tantangan selesai
+                livenessInstruction.classList.add('hidden');
+                livenessStatus.textContent = 'Verifikasi liveness selesai. Anda bisa login.';
+                loginButton.disabled = false; // Aktifkan tombol setelah semua challenge lulus
+                // Set input tersembunyi untuk proses submit utama
+                faceImageSequenceInput.value = JSON.stringify(imageSequence); // Simpan seluruh sequence gambar yang berhasil
+                livenessChallengeTypeInput.value = 'all_passed'; // Tanda bahwa semua liveness lulus
+                cameraStatus.textContent = 'Wajah Anda sudah dianalisis. Klik tombol Login & Verifikasi.';
+            }
+        }
+
+        async function detectAndDrawLandmarks() {
             if (!webcam.paused && !webcam.ended) {
                 const detections = await faceapi.detectSingleFace(webcam, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks();
                 
+                overlayCanvas.getContext('2d').clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
                 if (detections) {
-                    // --- Gambar Landmarks (opsional, untuk visual feedback) ---
                     const resizedDetections = faceapi.resizeResults(detections, displaySize);
-                    overlayCanvas.getContext('2d').clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-                    // faceapi.draw.drawDetections(overlayCanvas, resizedDetections); // Kotak wajah
-                    faceapi.draw.drawFaceLandmarks(overlayCanvas, resizedDetections); // Titik landmarks
-                    // --- End Gambar Landmarks ---
-
-                    // --- Liveness Challenge Control ---
+                    faceapi.draw.drawDetections(overlayCanvas, resizedDetections); // Gambar kotak wajah
+                    faceapi.draw.drawFaceLandmarks(overlayCanvas, resizedDetections); // Gambar titik landmarks
+                    
                     if (!challengeInProgress) {
-                        currentChallenge = challenges[Math.floor(Math.random() * challenges.length)]; // Pilih challenge acak
-                        instructionText.textContent = getChallengeInstruction(currentChallenge);
-                        livenessInstruction.classList.remove('hidden');
-                        livenessStatus.textContent = '';
-                        imageSequence = []; // Reset sequence
-                        blinkCount = 0;
-                        consecutiveNoBlinkFrames = 0;
-                        headMovementDetected = false;
-                        challengeInProgress = true;
-                        loginButton.disabled = true; // Nonaktifkan tombol saat challenge berlangsung
-
-                        setTimeout(() => {
-                            // Setelah durasi challenge, kirim sequence dan cek hasil
-                            processLivenessChallenge();
-                        }, CHALLENGE_DURATION);
-                    } else {
-                        // Kumpulkan frame selama challenge berlangsung
-                        imageSequence.push(takePicture(webcam, captureCanvas));
-
-                        // --- Analisis Liveness Real-time di Frontend (opsional, bisa juga hanya di backend) ---
-                        // Ini hanya contoh, logika sebenarnya akan di backend
-                        const eyeLeft = resizedDetections.landmarks.getLeftEye();
-                        const eyeRight = resizedDetections.landmarks.getRightEye();
-
-                        const ear = (faceapi.FaceLandmarks.measureEyeAspectRatio(eyeLeft) + faceapi.FaceLandmarks.measureEyeAspectRatio(eyeRight)) / 2;
-                        
-                        // Sederhana: jika mata tertutup, hitung sebagai kedipan
-                        if (currentChallenge === 'blink') {
-                            if (ear < 0.22) { // ambang batas EAR yang lebih rendah untuk kedipan
-                                blinkCount++;
-                                livenessStatus.textContent = `Kedipan terdeteksi: ${blinkCount}`;
-                            }
-                        }
-
-                        // Untuk gerakan kepala, kita akan mendeteksinya di backend
-                        // Frontend hanya mengirimkan sequence dan type challenge
+                         cameraStatus.textContent = 'Wajah terdeteksi. Tunggu instruksi verifikasi liveness.';
                     }
                 } else {
-                    livenessInstruction.classList.add('hidden');
-                    livenessStatus.textContent = 'Wajah tidak terdeteksi. Harap posisikan wajah Anda di tengah kamera.';
+                    cameraStatus.textContent = 'Wajah tidak terdeteksi. Harap posisikan wajah Anda di tengah kamera.';
                 }
+                requestAnimationFrame(detectAndDrawLandmarks); // Lanjutkan loop untuk menggambar
             }
-            requestAnimationFrame(detectAndAnalyzeFace); // Loop terus menerus
         }
 
         function getChallengeInstruction(challenge) {
             switch (challenge) {
-                case 'blink': return 'Kedipkan mata Anda.';
-                case 'head_yaw': return 'Miringkan kepala Anda ke kiri dan kanan.';
+                case 'blink': return 'Kedipkan mata Anda beberapa kali.';
+                case 'head_yaw': return 'Gerakkan kepala ke kiri dan kanan.';
                 case 'head_pitch': return 'Anggukkan kepala Anda ke atas dan bawah.';
-                default: return 'Lakukan gerakan acak.';
+                default: return 'Lakukan gerakan verifikasi.';
             }
         }
 
-        async function processLivenessChallenge() {
-            challengeInProgress = false; // Selesaikan challenge saat ini
-
-            if (imageSequence.length < SEQUENCE_LENGTH) {
-                livenessStatus.textContent = 'Gagal: Tidak cukup frame untuk analisis liveness. Coba lagi.';
-                loginButton.disabled = true; // Pastikan tombol nonaktif
-                setTimeout(() => { resetLivenessChallenge(); }, 2000); // Reset setelah 2 detik
+        async function processLivenessChallenge(challenge) {
+            challengeInProgress = false; // Challenge saat ini selesai
+            livenessInstruction.classList.add('hidden');
+            livenessStatus.textContent = 'Menganalisis liveness...';
+            
+            if (imageSequence.length === 0) {
+                livenessStatus.textContent = 'Gagal: Tidak ada frame yang ditangkap. Coba lagi.';
+                setTimeout(resetLivenessProcess, 2000);
                 return;
             }
 
-            // --- Kirim Sequence ke Backend ---
-            faceImageSequenceInput.value = JSON.stringify(imageSequence);
-            livenessChallengeTypeInput.value = currentChallenge;
-
-            // Submit form secara otomatis (kita tidak perlu tombol lagi, karena ini liveness)
-            // Namun, untuk alur yang sama seperti sebelumnya, kita biarkan tombol.
-            // Atau kita bisa langsung panggil fungsi submit form PemilihAuthController dari sini.
-            
-            // Simulasikan submit form setelah challenge selesai
-            livenessInstruction.classList.add('hidden');
-            livenessStatus.textContent = 'Challenge selesai. Mohon tunggu verifikasi...';
-            loginButton.disabled = false; // Aktifkan tombol agar user bisa submit manual setelah challenge selesai
-            cameraStatus.textContent = 'Wajah Anda sudah dianalisis. Klik tombol Login & Verifikasi.';
-
-            // Reset liveness challenge jika user tidak segera submit
-            setTimeout(() => {
-                if (!document.getElementById('pemilihLoginForm').submitted) { // Cek jika form belum disubmit
-                    resetLivenessChallenge();
+            try {
+                const csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+                const response = await fetch("{{ route('pemilih.liveness.check') }}", {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': csrfToken
+                    },
+                    body: JSON.stringify({
+                        image_sequence: imageSequence,
+                        challenge_type: challenge
+                    })
+                });
+                const result = await response.json();
+                
+                if (response.ok && result.status === 'success' && result.is_live === 'true') {
+                    livenessStatus.textContent = `Liveness Check Lulus (${challenge}): ${result.message}`;
+                    currentChallengeIndex++; // Maju ke tantangan berikutnya
+                    setTimeout(startLivenessChallengeCycle, 1000); // Mulai tantangan berikutnya setelah jeda
+                } else {
+                    livenessStatus.textContent = `Liveness Check Gagal (${challenge}): ${result.message || 'Coba lagi.'}`;
+                    setTimeout(resetLivenessProcess, 2000); // Reset seluruh proses liveness jika gagal
                 }
-            }, 10000); // Reset setelah 10 detik jika tidak di-submit
+            } catch (error) {
+                console.error("Error during liveness check AJAX:", error);
+                livenessStatus.textContent = 'Terjadi kesalahan saat memeriksa liveness. Coba lagi.';
+                setTimeout(resetLivenessProcess, 2000);
+            }
         }
 
-        function resetLivenessChallenge() {
+        function resetLivenessProcess() {
+            currentChallengeIndex = 0; // Reset ke tantangan pertama
             livenessInstruction.classList.add('hidden');
             livenessStatus.textContent = '';
             cameraStatus.textContent = 'Kamera aktif. Harap bersiap untuk verifikasi wajah.';
-            loginButton.disabled = false; // Aktifkan tombol
+            loginButton.disabled = true; // Nonaktifkan tombol sampai siklus selesai
             imageSequence = []; // Bersihkan sequence
-            currentChallenge = ''; // Reset challenge type
+            challengeInProgress = false; // Reset status challenge
+            setTimeout(startLivenessChallengeCycle, 1000); // Mulai lagi siklus setelah jeda
         }
 
         // --- Event Listener untuk Submit Form ---
         document.getElementById('pemilihLoginForm').addEventListener('submit', function(event) {
-            // Kita sudah mengontrol submit dari processLivenessChallenge, tapi jika user klik manual:
-            if (!faceImageSequenceInput.value) { // Jika belum ada sequence
-                event.preventDefault(); // Cegah submit
-                alert('Mohon selesaikan challenge verifikasi wajah terlebih dahulu.');
-                // Mulai ulang challenge jika belum selesai
-                if (!challengeInProgress) {
-                    resetLivenessChallenge(); // Mulai challenge baru
-                    // Paksa user untuk tidak langsung submit
-                    loginButton.disabled = true; 
-                    instructionText.textContent = getChallengeInstruction(challenges[0]); // Mulai dengan challenge pertama
-                    livenessInstruction.classList.remove('hidden');
-                    challengeInProgress = true;
-                    imageSequence = [];
-                    setTimeout(() => { processLivenessChallenge(); }, CHALLENGE_DURATION);
-                }
+            // Mencegah submit jika tombol masih dinonaktifkan (liveness belum selesai)
+            if (loginButton.disabled) {
+                event.preventDefault(); 
+                alert('Mohon selesaikan semua tantangan verifikasi liveness terlebih dahulu.');
                 return;
             }
+            // Jika tombol sudah aktif, berarti semua liveness sudah selesai
             this.submitted = true; // Flag form sudah disubmit
             webcam.classList.add('shutter-effect'); // Efek shutter
             setTimeout(() => { webcam.classList.remove('shutter-effect'); }, 150);
-            // Form akan disubmit
+            // Form akan disubmit secara otomatis setelah ini
         });
 
-        // --- Startup ---
+        // --- Startup & Cleanup ---
         window.addEventListener('load', () => {
-            // Pastikan models dimuat dulu baru startCamera()
             // startCamera sudah dipanggil setelah Promise.all models.
         });
         window.addEventListener('beforeunload', () => {
