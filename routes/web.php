@@ -1,4 +1,5 @@
 <?php
+// gempurbudianarki/evoting_desa/EVOTING_DESA-b34845e78ac5420a547413a68e63d1d0080f4b73/routes/web.php
 
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Admin\AuthController as AdminAuthController;
@@ -79,6 +80,7 @@ Route::prefix('admin')->name('admin.')->group(function () {
 // --- BARU: Route liveness check untuk admin yang diakses terpisah (DEBUGGING ONLY) ---
 // Ini untuk mengatasi error 500/SyntaxError yang mungkin disebabkan middleware auth
 // AKAN DIKEMBALIKAN KE DALAM GROUP AUTH SETELAH DEBUGGING
+// Pertahankan rute ini di luar group auth admin jika diperlukan akses anonim untuk liveness check pada enroll
 Route::post('admin/pemilih/liveness-check', [AdminPemilihController::class, 'checkLiveness'])->name('admin.pemilih.liveness.check');
 
 
@@ -88,9 +90,12 @@ Route::prefix('pemilih')->name('pemilih.')->group(function () {
     Route::middleware('guest:web_pemilih')->group(function () {
         Route::get('/login', [PemilihAuthController::class, 'showLoginForm'])->name('login');
         Route::post('/login', [PemilihAuthController::class, 'login']);
-        // Route untuk liveness check terpisah di halaman login pemilih
-        Route::post('/liveness-check', [PemilihAuthController::class, 'checkLiveness'])->name('liveness.check');
     });
+
+    // Rute liveness check untuk pemilih, dipindahkan keluar dari middleware guest
+    // Agar bisa diakses baik saat auto-fill (belum login) maupun saat liveness challenge (proses login)
+    Route::post('/liveness-check', [PemilihAuthController::class, 'checkLiveness'])->name('liveness.check');
+
 
     // Grup rute yang hanya bisa diakses setelah pemilih login
     Route::middleware('auth:web_pemilih')->group(function () {

@@ -48,11 +48,11 @@
             left: 0;
             width: 100%;
             height: 100%;
-            /* Hapus mirroring CSS di sini, akan dilakukan di JS canvas context */
-            /* transform: scaleX(-1); */ 
+            /* Mirroring CSS dihapus dari sini, akan dilakukan di JS canvas context */
         }
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+    {{-- Face-API.js dimuat di sini karena ini adalah @section('styles') --}}
+    <script defer src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
 @endsection
 
 @section('content')
@@ -108,7 +108,7 @@
                     <p class="text-red-500 text-xs italic mt-1">{{ $message }}</p>
                 @enderror
                 @error('general')
-                    <p class="text-500 text-xs italic mt-1">{{ $message }}</p>
+                    <p class="text-red-500 text-xs italic mt-1">{{ $message }}</p>
                 @enderror
             </div>
 
@@ -235,7 +235,7 @@ async function detectAndDrawLandmarksContinuous() {
     if (!webcam.paused && !webcam.ended) {
         const detections = await faceapi.detectSingleFace(
             webcam, 
-            new faceapi.TinyFaceDetectorOptions({ inputSize: 416 }) // InputSize default 416 untuk stabilitas
+            new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.5 }) // Optimalisasi: inputSize dan scoreThreshold
         ).withFaceLandmarks(); 
         
         const context = overlayCanvas.getContext('2d');
@@ -250,7 +250,7 @@ async function detectAndDrawLandmarksContinuous() {
             // console.log("Face detected. Score:", detections.detection.score); // Tidak perlu lagi log ini setiap frame
             
             if (detections.landmarks && detections.landmarks.positions && detections.landmarks.positions.length === 68) { 
-                console.log("Landmarks detected and are valid (68 points). Drawing now."); // PENTING: Log ini akan muncul jika landmarks ditemukan
+                // console.log("Landmarks detected and are valid (68 points). Drawing now."); 
                 const resizedDetections = faceapi.resizeResults(detections, displaySize); 
                 const landmarksPositions = resizedDetections.landmarks.positions; // Ambil array posisi langsung
 
@@ -264,7 +264,7 @@ async function detectAndDrawLandmarksContinuous() {
                 };
 
                 // Garis Rahang (Jaw Outline) - points 0-16
-                drawContourFromPoints(context, landmarksPositions.slice(0, 17), drawOptions, false); // false for isClosed
+                drawContourFromPoints(context, landmarksPositions.slice(0, 17), drawOptions, false); 
                 
                 // Alis Kiri (Left Eyebrow) - points 17-21
                 drawContourFromPoints(context, landmarksPositions.slice(17, 22), drawOptions, false); 
@@ -275,12 +275,12 @@ async function detectAndDrawLandmarksContinuous() {
                 drawContourFromPoints(context, landmarksPositions.slice(27, 36), drawOptions, false);
                 
                 // Mata Kiri (Left Eye) - points 36-41
-                drawContourFromPoints(context, landmarksPositions.slice(36, 42), drawOptions, true); // true for isClosed
+                drawContourFromPoints(context, landmarksPositions.slice(36, 42), drawOptions, true); 
                 // Mata Kanan (Right Eye) - points 42-47
-                drawContourFromPoints(context, landmarksPositions.slice(42, 48), drawOptions, true); // true for isClosed
+                drawContourFromPoints(context, landmarksPositions.slice(42, 48), drawOptions, true); 
 
                 // Mulut (Mouth) - points 48-67
-                drawContourFromPoints(context, landmarksPositions.slice(48, 68), drawOptions, true); // true for isClosed
+                drawContourFromPoints(context, landmarksPositions.slice(48, 68), drawOptions, true); 
                 
                 // Opsional: Menggambar titik-titik (dots) untuk semua landmarks
                 context.fillStyle = 'magenta'; // Warna titik
@@ -290,12 +290,22 @@ async function detectAndDrawLandmarksContinuous() {
                     context.fill();
                 }
 
+                if (!challengeInProgress) {
+                     cameraStatus.textContent = 'Wajah terdeteksi. Siap untuk pendaftaran wajah.';
+                }
+
             } else {
-                console.warn("Face detected, but landmarks are missing or invalid in this frame. Detections object:", detections); // PENTING: Log ini akan muncul jika landmarks hilang
-                faceapi.draw.drawDetections(overlayCanvas, detections); // Tetap gambar bounding box jika landmarks tidak ada
+                // console.warn("Face detected, but landmarks are missing or invalid in this frame. Detections object:", detections); 
+                faceapi.draw.drawDetections(overlayCanvas, resizedDetections); // Tetap gambar bounding box jika landmarks tidak ada
+                if (!challengeInProgress) {
+                    cameraStatus.textContent = 'Wajah terdeteksi, tapi landmarks belum jelas. Harap posisikan wajah Anda lebih baik.';
+                }
             }
         } else {
-            console.log("No face detected in this frame for landmark drawing."); // PENTING: Log ini akan muncul jika tidak ada wajah
+            // console.log("No face detected in this frame for landmark drawing."); 
+            if (!challengeInProgress) {
+                cameraStatus.textContent = 'Wajah tidak terdeteksi. Harap posisikan wajah Anda di tengah kamera.';
+            }
         }
         
         detectLandmarksFrameId = requestAnimationFrame(detectAndDrawLandmarksContinuous);
@@ -411,7 +421,6 @@ async function processLivenessChallenge(challenge) {
             setTimeout(resetLivenessProcess, 2000); // Reset seluruh proses liveness jika gagal
         }
     }
-    // ... (rest of processLivenessChallenge function) ...
     catch (error) {
         console.error("Error during liveness check AJAX:", error);
         livenessStatus.textContent = 'Terjadi kesalahan saat memeriksa liveness. Coba lagi.';
@@ -444,4 +453,4 @@ window.addEventListener('beforeunload', () => {
     }
 });
 </script>
-@endsection 
+@endsection
